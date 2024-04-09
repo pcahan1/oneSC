@@ -97,7 +97,6 @@ onesc.plot_state_graph(state_path)
 
 However, you can also manually create a directed state graph:
 ```
-```python
 edge_list = [("CMP", "MK"), ("CMP", "MEP"), ("MEP", "Erythrocytes"), ("CMP", "GMP"), ("GMP", "Granulocytes"), ("GMP", "Monocytes")]
 H = nx.DiGraph(edge_list)
 onesc.plot_state_graph(H)
@@ -185,7 +184,6 @@ Instead of looking the trajectory of a single cell, we can sample the end stages
 ad_wt = onesc.sample_and_compile_anndatas(simlist_wt, X=50, time_bin=(80, 100), sequential_order_column='sim_time')
 pySCN.rank_classify(ad_wt, clf)
 pySCN.heatmap_scores(ad_wt, groupby = 'SCN_class')
-
 ```
 <img src="img/scn_hm_wt.png" width="400">
 
