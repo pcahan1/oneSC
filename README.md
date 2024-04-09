@@ -28,7 +28,7 @@ conda activate OneSC_run
 In the conda environment, type the following code. 
 ```
 # should be able to install onesc and the necessary dependencies. 
-pip install git+https://github.com/CahanLab/oneSC.git@cscb24
+pip install git+https://github.com/pcahan1/oneSC.git@cscb24
 ```
 
 ### <a name="data">Example data</a>
