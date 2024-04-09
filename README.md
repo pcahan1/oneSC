@@ -9,17 +9,14 @@ Below is a walk-through tutorial on
 
 ### Table of contents
 
-[Installation](#installation) <br>
-
-[Inference of GRN](#grn_inference) <br>
-
-[Simulation of Synthetic Cells](#simulate_syncells) <br>
-
-[Visualization of Simulated Cells](#visualize_simcells) <br>
-
-[Perform Perturbation Simulation](#perturb_syncells) <br>
-
-[Optional - Identification of dynamic TFs](#identify_dyntfs)
+1. [Installation](#installation) 
+2. [Example data](#data)
+3. [Setup](#setup)
+4. [GRN inference](#grn_inference)
+5. [Setup simulator](#setup_simulator)
+6. [Simulate wildtype trajectory](#simulate_wildtype)
+7. [Simulate knockout trajectory](#simulate_knockout)
+8. [Optional - Identification of dynamic TFs](#identify_dyntfs)
 
 ### <a name="installation">Installation</a>
 We recommend creating a new conda environment (with python version >= 3.9) and install OneSC. Open terminal and type the following code. 
@@ -33,16 +30,18 @@ In the conda environment, type the following code.
 # should be able to install onesc and the necessary dependencies. 
 pip install git+https://github.com/CahanLab/oneSC.git@cscb24
 ```
-### <a name="grn_inference">Inference of GRN</a>
-In the tutorial, we are going to use the mouse myeloid single-cell data from [Paul et al, 2015](https://www.cell.com/cell/fulltext/S0092-8674(15)01493-2?_returnURL=https%3A%2F%2Flinkinghub.elsevier.com%2Fretrieve%2Fpii%2FS0092867415014932%3Fshowall%3Dtrue). You can download the [expression profiles of core transcription factors](https://cnobjects.s3.amazonaws.com/OneSC/Pual_2015/train_exp.csv) and the [sample table](https://cnobjects.s3.amazonaws.com/OneSC/Pual_2015/samp_tab.csv) with pusedotime and cluster information. 
 
-Import the required packages. 
+### <a name="data">Example data</a>
+In the tutorial, we are going to use the mouse myeloid single-cell data from [Paul et al, 2015](https://pubmed.ncbi.nlm.nih.gov/26627738/). We have refined the annotation of these 2,670 cells. Please download the [h5ad file containing the expression values of 12 core transcription factors in these cells here](https://cnobjects.s3.amazonaws.com/OneSC/0.1.0/Paul15_040824.h5ad). Note that this annData object includes cell type annotation and precomputed pseudotime metadata in adata.obs['cell_types'] and adata.obs['dpt_pseudotime'], respectively.  
+
+### <a name="setup">Setup</a>
+
+Launch Jupyter or your Python interpreter. Import the required packages and functions. 
 ```
 import numpy as np 
 import pandas as pd 
 import onesc 
 import networkx as nx
-import pickle 
 import seaborn as sns
 import matplotlib.pyplot as plt
 import os
@@ -57,33 +56,38 @@ from igraph import Graph
 ig.config['plotting.backend'] = 'matplotlib'
 ```
 
-Load in the training data. 
+Load in the training data:
 ```
 adata = sc.read_h5ad("Paul15_040824.h5ad")
 ```
 
-We can use PySCN to help us annotate the states of the simulated cells. So train it now:
+We will use PySCN later to annotate the states of the simulated cells. Train the classifer now:
 ```
-adata.obs['cell_types'].value_counts()
-
-
 adTrain_rank, adHeldOut_rank = pySCN.splitCommonAnnData(adata, ncells=50,dLevel="cell_types")
-
 clf = pySCN.train_rank_classifier(adTrain_rank, dLevel="cell_types")
+```
 
+Classify held out data:
+```
 pySCN.rank_classify(adHeldOut_rank, clf)
 pySCN.heatmap_scores(adHeldOut_rank, groupby='SCN_class')
 ```
 
 <img src="img/pyscn_heatmap.png" width="400">
 
+Note: the function `train_rank_classifier()` ranks transforms training and query data instead of TSP. Be forewarned that it is likely to be slow if applied to adata objects with thousands of genes. 
 
 
-Define state transition graph
+### <a name="grn_inference">GRN Inference</a>
+
+The first step in reconstructing or inferring a GRN with oneSC is to determine the directed state graph of the cells. In other words, what is the sequence of distinct states that a cell passes through from the start to a terminal state? oneSC requires that the user provide cell state annotations. Typically these are in the form of cell clusters or cell type annotations. oneSC also requires that the user specify the initial cell states and the end states. In our data, the cell states have already been provided in  .obs['cell_types']. Now, we will specify the initial cell states and the end states:
 ```
-iinitial_clusters = ['CMP']
+initial_clusters = ['CMP']
 end_clusters = ['Erythrocytes', 'Granulocytes', 'Monocytes', 'MK']
+```
 
+We can use oneSC to infer the directed state graph since it knows the initial and terminal states and the pseudotime of all cells:
+```
 state_path = onesc.construct_cluster_graph_adata(adata, initial_clusters = initial_clusters, terminal_clusters = end_clusters, cluster_col = "cell_types", pseudo_col = "dpt_pseudotime")
 
 onesc.plot_state_graph(state_path)
@@ -91,8 +95,7 @@ onesc.plot_state_graph(state_path)
 
 <img src="img/state_graph_1.png" width="400">
 
-
-You can also manually set the state path:
+However, you can also manually create a directed state graph:
 ```
 ```python
 edge_list = [("CMP", "MK"), ("CMP", "MEP"), ("MEP", "Erythrocytes"), ("CMP", "GMP"), ("GMP", "Granulocytes"), ("GMP", "Monocytes")]
@@ -102,39 +105,92 @@ onesc.plot_state_graph(H)
 
 <img src="img/state_graph_2.png" width="400">
 
+Now we are ready to infer the GRN. There are quite a few parameters to `infer_grn()`. Listed below are required parameters, and those that you can adjust to optimize runtime on your platform. In the example below, we have selected parameter values appropriate for this data.
 
-Infer the GRN
+- cellstate_graph: this is just the state graph we made earlier, H.
+- start_end_clusters: a dict of 'start', and 'end' cell states.
+- adata: the training data.
+- run_parallel: (bool, optional): whether to run network inference in parallel. Defaults to True
+- n_cores (int, optional): number of cores to run the network inference in parallel. Defaults to 16
+
+infer_grn() returns a Pandas DataFrame. We convert it to an igraph graph for visualization.
+
 ```
-iGRN = onesc.infer_grn(H, start_end_states, adata, num_generations = 20, max_iter = 30, num_parents_mating = 4, sol_per_pop = 30, reduce_auto_reg=True, ideal_edges = 0, GA_seed_list = [1, 3], init_pop_seed_list = [21, 25], cluster_col='cell_types', pseudoTime_col='dpt_pseudotime')
+start_end_states = {'start': ['CMP'], 'end':['MK', 'Erythrocytes', 'Granulocytes', 'Monocytes']}
+
+iGRN = onesc.infer_grn(H, start_end_states, adata, num_generations = 20, sol_per_pop = 30, reduce_auto_reg=True, ideal_edges = 0, GA_seed_list = [1, 3], init_pop_seed_list = [21, 25], cluster_col='cell_types', pseudoTime_col='dpt_pseudotime')
 
 grn_ig = onesc.dataframe_to_igraph(iGRN)
 onesc.plot_grn(grn_ig, layout_method='fr',community_first=True)
 ```
 <img src="img/CMP_grn.png" width="400">
 
+The purple edges represent positive regulatory relationships (i.e. TF promotes expression of TG), whereas grey edges represent inhibitory relationships. Nodes have been colored by a community detection algorithm applied to the GRN.
 
-Define the start state
+### <a name="setup_simulator">Setup simulator</a>
+For all simulations, we need to define the start state. In our case, we know that cells start in the CMP state. To determine the Boolean state of genes in the CMP state, we subset the adata to those cells and then apply thresholds on the mean expression and the percent of cells in which the gene is detected: 
 ```
 adCMP = adata[adata.obs['cell_types'] == 'CMP'].copy()
 xstates = onesc.define_states_adata(adCMP, min_mean = 0.05, min_percent_cells = 0.20) * 2 
 ```
+Note: oneSC has other, more sophisticated approaches to achieve this that are not yet compatible with annData.
 
-
-Set up for simulations
+Now we construct a OneSC simulator object:
 ```
+netname = 'CMPdiff'
 netsim = onesc.network_structure()
 netsim.fit_grn(iGRN)
 sim = onesc.OneSC_simulator()
-sim.add_network_compilation('CMPdiff', netsim)
+sim.add_network_compilation(netname, netsim)
 ```
 
+### <a name="simulate_wildtype">Simulate wild type trajectory</a>
+Finally we are ready to simulate expression state trajectories using our GRN. Note that the `simulate_parallel_adata` function has been tested on MacOS (m1 chip) and Ubuntu, it may or may not work on Windows. 
 
-Simulate a trajectory of a 'wild-type' cell. This function has been tested on MacOS (m1 chip) and Ubuntu, it may or may not work on Windows. 
+- OneSC_simulator: exactly that, the OneSC simulator object to use. 
+- initial_exp_dict (dict): dictionary of initial state values.
+- initial_subnet (str): the name of the gene regulatory fitted network structure that the user want to use for simulation. 
+- perturb_dict (dict, optional): a dictionary with the key of gene name and value indicating the in silico perturbation. If the user want to perform overexpression, then set the value between 0 and 2. If the user want to perform knockdown, then set the value between 0 and -2. Defaults to dict().
+- num_runs (int, optional): number of simulations to run. Defaults to 10.
+- n_cores (int, optional): number of cores for parallel computing. Defaults to 2.
+- num_sim (int, optional): number of simulation steps. Defaults to 1000.
+- t_interval (float, optional): the size of the simulation step. Defaults to 0.01.
+- noise_amp (int, optional): the amplitude of noise. Defaults to 0.1
+
 ```
-simlist_wt = onesc.simulate_parallel_adata(sim, xstates, 'CMPdiff', n_cores = 8, num_sim = 1000, t_interval = 0.1, noise_amp = 0.5)
+simlist_wt = onesc.simulate_parallel_adata(sim, xstates, netname, n_cores = 8, num_sim = 1000, num_runs = 32, t_interval = 0.1, noise_amp = 0.5)
 ```
 
-Simulate a trajectory of a cell in which Cebpa is knocked out
+`simulate_parallel_adata` returns a list of annData objects. Each annData contains `num_sim` simulated cells starting at the `initial_exp_dict` state, and progressing subject to the regulatory constraints defined by the provided GRN modulated by randomly generated noise (if allowed). Each annData has .obs['sim_time']. Let's look at the transcriptomic states over sim_time for one simulated trajectory. We will classify the cells first, and then visualize
+
+```
+ad_sim1 = simlist_wt[0].copy()
+pySCN.rank_classify(ad_sim1, clf)
+
+# a hack because sc.pl.heatmap requires a 'groupby', so groupby simulation time bin
+tmp_obs = ad_sim1.obs.copy()
+bins = np.linspace(-1, 999, 11)
+labels = [f"{int(bins[i]) + 1}-{int(bins[i+1])}" for i in range(len(bins)-1)]
+
+tmp_obs['sTime_bin'] = pd.cut(tmp_obs['sim_time'], bins=bins, labels=labels)
+ad_sim1.obs = tmp_obs
+
+pySCN.heatmap_scores(ad_sim1, groupby = 'sTime_bin')
+```
+<img src="img/scn_hm_one_wt_trajectory.png" width="400">
+
+
+Instead of looking the trajectory of a single cell, we can sample the end stages of all simulations:
+```
+ad_wt = onesc.sample_and_compile_anndatas(simlist_wt, X=50, time_bin=(80, 100), sequential_order_column='sim_time')
+pySCN.rank_classify(ad_wt, clf)
+pySCN.heatmap_scores(ad_wt, groupby = 'SCN_class')
+
+```
+<img src="img/scn_hm_wt.png" width="400">
+
+### <a name="simulate_knockout">Simulate knockout trajectory</a>
+Now, let's simulate a trajectory of a cell in which Cebpa is knocked out
 ```
 perturb_dict = dict()
 perturb_dict['Cebpa'] = -1 
@@ -143,13 +199,15 @@ simlist_cebpa_ko = onesc.simulate_parallel_adata(sim, xstates, 'CMPdiff', pertur
 
 Now fetch the simulated cells, sampling from the end stages, classify them, and visualize the results.
 ```
-ad_wt = onesc.sample_and_compile_anndatas(simlist_wt, X=50, time_bin=(80, 100), sequential_order_column='sim_time')
-
 ad_cebpa_ko = onesc.sample_and_compile_anndatas(simlist_cebpa_ko, X=50, time_bin=(80, 100), sequential_order_column='sim_time')
-
-pySCN.rank_classify(ad_wt, clf)
 pySCN.rank_classify(ad_cebpa_ko, clf)
+pySCN.heatmap_scores(ad_cebpa_ko, groupby = 'SCN_class')
+```
 
+<img src="img/scn_hm_cepba_ko.png" width="400">
+
+We can also directly compare the proportions of cell types across simulations/perturbations as follows:
+```
 pySCN.plot_cell_type_proportions([adHeldOut_rank,ad_wt, ad_cebpa_ko], obs_column = "SCN_class", labels=["HeldOut", "WT","Cebpa_KO"])
 ```
 
