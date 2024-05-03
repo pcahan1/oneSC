@@ -22,12 +22,25 @@ from adjustText import adjust_text
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 
+# this is just a wrapper to construct_cluster_network() that takes anndata as input
+# this does not work because of how construct_cluster_network() tries to re-order cells
+def construct_cluster_graph_adata(
+    adata,
+    **kwargs):
+    sampTab = adata.obs.copy()
+    if sp.sparse.issparse(adata.X):
+        train_exp = pd.DataFrame(adata.X.T.toarray())    
+    else:
+        train_exp = pd.DataFrame(adata.T.X.copy())
+    train_exp.columns = sampTab.index
+    return construct_cluster_network(train_exp, sampTab, **kwargs)
+
 def plot_grn(grn, layout_method="sugiyama", community_first=False):
     grn_ig = grn.copy()
     v_style_grn = {}
     v_style_grn["layout"] = grn_ig.layout(layout_method)
     v_style_grn["vertex_size"] = 20
-    v_style_grn["edge_width"] = [1 if edge_type == "-" else .5 for edge_type in grn_ig.es["Type"]]
+    v_style_grn["edge_width"] = [.5 if edge_type == "-" else 1 for edge_type in grn_ig.es["Type"]]
     v_style_grn["edge_color"] = ["#7142cf" if edge_type == "+" else "#AAA" for edge_type in grn_ig.es["Type"]]
     v_style_grn["edge_arrow_width"] = 5 
 
@@ -183,7 +196,10 @@ def infer_grn(
 
     if sp.sparse.issparse(adata.X):
         df = pd.DataFrame(adata.X.toarray(), index=adata.obs.index, columns=adata.var.index)
-    train_exp = df.T
+        train_exp = df.T
+    else:
+        train_exp = adata.X.T # beware this does not work as intended!
+
     samp_tab = adata.obs.copy()
 
     initial_clusters = start_end_clusters['start']
@@ -277,6 +293,7 @@ def sample_and_compile_anndatas(anndata_list, X, time_bin=None, sequential_order
         compiled_samples.append(sampled_cells)
     
     compiled_adata = ad.concat(compiled_samples, axis=0)
+    compiled_adata.obs_names_make_unique()
 
     return compiled_adata
 
